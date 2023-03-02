@@ -25,6 +25,7 @@ func getEnv(key, defaultVal string) string {
 }
 
 type metrics struct {
+	info       prometheus.Gauge
 	executions *prometheus.CounterVec
 	completed  *prometheus.CounterVec
 	locked     *prometheus.CounterVec
@@ -33,6 +34,16 @@ type metrics struct {
 
 func setupMetrics(prefix string) *metrics {
 	m := &metrics{
+		info: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "build_info",
+			Help:      "Build information.",
+			ConstLabels: prometheus.Labels{
+				"Version": "v0.1.0",
+				"Author":  "Massimo Costa <costa.massimo@gmail.com>",
+			},
+		}),
 		executions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: prefix,
 			Subsystem: "scheduler",
@@ -59,6 +70,7 @@ func setupMetrics(prefix string) *metrics {
 		}, []string{"task_name", "success"}),
 	}
 
+	prometheus.MustRegister(m.info)
 	prometheus.MustRegister(m.executions)
 	prometheus.MustRegister(m.completed)
 	prometheus.MustRegister(m.locked)
