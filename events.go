@@ -8,8 +8,63 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/redis/go-redis/v9"
 )
+
+type metrics struct {
+	info       prometheus.Gauge
+	executions *prometheus.CounterVec
+	completed  *prometheus.CounterVec
+	locked     *prometheus.CounterVec
+	duration   *prometheus.HistogramVec
+}
+
+func setupMetrics(prefix string) *metrics {
+	m := &metrics{
+		info: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "build_info",
+			Help:      "Build information.",
+			ConstLabels: prometheus.Labels{
+				"Version": "v0.1.0",
+				"Author":  "Massimo Costa <costa.massimo@gmail.com>",
+			},
+		}),
+		executions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "task_execution_total",
+			Help:      "The Number of times a scheduler task has been executed.",
+		}, []string{"task_name"}),
+		completed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "task_completed_total",
+			Help:      "The Number of times a scheduler task has been completed.",
+		}, []string{"task_name", "success"}),
+		locked: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "task_locked_total",
+			Help:      "The Number of times a scheduler task failed to acquire a lock.",
+		}, []string{"task_name"}),
+		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: prefix,
+			Subsystem: "scheduler",
+			Name:      "task_duration_seconds",
+			Help:      "Task duration in seconds.",
+		}, []string{"task_name", "success"}),
+	}
+
+	prometheus.MustRegister(m.info)
+	prometheus.MustRegister(m.executions)
+	prometheus.MustRegister(m.completed)
+	prometheus.MustRegister(m.locked)
+	prometheus.MustRegister(m.duration)
+	return m
+}
 
 type EventListener interface {
 	Run(ctx context.Context) error
@@ -23,12 +78,12 @@ type listener struct {
 	startExecutionMap map[string]time.Time
 }
 
-func NewEventListener(rdb *redis.Client, channel string, logger log.Logger, m *metrics) EventListener {
+func NewEventListener(rdb *redis.Client, channel string, logger log.Logger, prefix string) EventListener {
 	return &listener{
 		rdb:               rdb,
 		channel:           channel,
 		logger:            logger,
-		m:                 m,
+		m:                 setupMetrics(prefix),
 		startExecutionMap: make(map[string]time.Time),
 	}
 }
@@ -60,6 +115,8 @@ func (l *listener) handleEvent(msg *redis.Message) error {
 		return err
 	}
 
+	level.Debug(l.logger).Log("event", fmt.Sprintf("%+v", evt))
+
 	switch evt.Event {
 	case SIGNAL_EXECUTING:
 		l.m.executions.WithLabelValues(evt.TaskName).Inc()
@@ -76,9 +133,6 @@ func (l *listener) handleEvent(msg *redis.Message) error {
 	case SIGNAL_LOCKED:
 		l.m.locked.WithLabelValues(evt.TaskName).Inc()
 	}
-
-	level.Info(l.logger).Log("map", fmt.Sprintf("%+v", l.startExecutionMap))
-
 	return nil
 }
 

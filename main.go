@@ -11,10 +11,9 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/go-redis/redis/v8"
 	"github.com/oklog/run"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 func getEnv(key, defaultVal string) string {
@@ -22,60 +21,6 @@ func getEnv(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
-}
-
-type metrics struct {
-	info       prometheus.Gauge
-	executions *prometheus.CounterVec
-	completed  *prometheus.CounterVec
-	locked     *prometheus.CounterVec
-	duration   *prometheus.HistogramVec
-}
-
-func setupMetrics(prefix string) *metrics {
-	m := &metrics{
-		info: prometheus.NewGauge(prometheus.GaugeOpts{
-			Namespace: prefix,
-			Subsystem: "scheduler",
-			Name:      "build_info",
-			Help:      "Build information.",
-			ConstLabels: prometheus.Labels{
-				"Version": "v0.1.0",
-				"Author":  "Massimo Costa <costa.massimo@gmail.com>",
-			},
-		}),
-		executions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: prefix,
-			Subsystem: "scheduler",
-			Name:      "task_execution_total",
-			Help:      "The Number of times a scheduler task has been executed.",
-		}, []string{"task_name"}),
-		completed: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: prefix,
-			Subsystem: "scheduler",
-			Name:      "task_completed_total",
-			Help:      "The Number of times a scheduler task has been completed.",
-		}, []string{"task_name", "success"}),
-		locked: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: prefix,
-			Subsystem: "scheduler",
-			Name:      "task_locked_total",
-			Help:      "The Number of times a scheduler task failed to acquire a lock.",
-		}, []string{"task_name"}),
-		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: prefix,
-			Subsystem: "scheduler",
-			Name:      "task_duration_seconds",
-			Help:      "Task duration in seconds.",
-		}, []string{"task_name", "success"}),
-	}
-
-	prometheus.MustRegister(m.info)
-	prometheus.MustRegister(m.executions)
-	prometheus.MustRegister(m.completed)
-	prometheus.MustRegister(m.locked)
-	prometheus.MustRegister(m.duration)
-	return m
 }
 
 func main() {
@@ -100,9 +45,6 @@ func main() {
 	}
 	level.Info(logger).Log("msg", "Process started")
 
-	m := setupMetrics(*metricsPrefix)
-	http.Handle("/metrics", promhttp.Handler())
-
 	var g run.Group
 	{
 		// Signal Handler
@@ -119,7 +61,8 @@ func main() {
 		}
 
 		g.Add(func() error {
-			level.Info(logger).Log("addr", fmt.Sprintf("%s/metric", webListener.Addr()))
+			level.Info(logger).Log("addr", fmt.Sprintf("http://%s/metric", webListener.Addr()))
+			http.Handle("/metrics", promhttp.Handler())
 			return http.Serve(webListener, http.DefaultServeMux)
 		}, func(err error) {
 			webListener.Close()
@@ -141,7 +84,7 @@ func main() {
 
 		ctx, cancel := context.WithCancel(ctx)
 		g.Add(func() error {
-			service := NewEventListener(rdb, *redisChannel, logger, m)
+			service := NewEventListener(rdb, *redisChannel, logger, *metricsPrefix)
 			return service.Run(ctx)
 		}, func(err error) {
 			cancel()
